@@ -1,0 +1,4 @@
+[app]
+database_url = "sqlite:///data/investment_gini.db"
+timezone = "Asia/Kolkata"
+base_currency = "INR"

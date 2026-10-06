@@ -1,0 +1,4 @@
+[risk]
+max_position_weight = 0.10
+max_sector_weight = 0.25
+max_risk_per_position = 0.005

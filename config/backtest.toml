@@ -1,0 +1,5 @@
+[backtest]
+initial_capital = 1000000
+signal_cutoff = "session_close"
+execution_model = "next_session_open"
+slippage_bps = 10

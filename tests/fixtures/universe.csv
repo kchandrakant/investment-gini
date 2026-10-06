@@ -1,0 +1,4 @@
+universe,universe_version,symbol,isin,company_name,exchange,effective_from,effective_to,sector,industry
+NIFTY 200,fixture-v1,ALPHA,INE000A01001,Alpha Industries,NSE,2024-01-01,,Industrials,Engineering
+NIFTY 200,fixture-v1,BETA,INE001A01002,Beta Financial,NSE,2024-01-01,,Financial Services,Banking
+NIFTY 200,fixture-v1,LEGACY,INE002A01003,Legacy Consumer,NSE,2023-01-01,2023-12-31,Consumer,Household Products

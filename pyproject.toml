@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "investment-gini"
+version = "0.1.0"
+description = "A research-first decision-support laboratory for Indian equities."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "alembic==1.19.1",
+    "pydantic==2.13.5",
+    "sqlalchemy==2.0.52",
+    "streamlit==1.63.0",
+    "typer==0.27.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy==1.20.2",
+    "pytest==8.4.2",
+    "ruff==0.16.5",
+]
+
+[project.scripts]
+investment-gini = "investment_gini.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/investment_gini"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["investment_gini"]
