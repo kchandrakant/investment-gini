@@ -15,7 +15,11 @@ from investment_gini.domain import (
 )
 from investment_gini.ingestion import FundamentalIngestionService, UniverseIngestionService
 from investment_gini.models import Base, FundamentalFact
-from investment_gini.providers import CsvUniverseProvider, FundamentalBatch
+from investment_gini.providers import (
+    CsvFundamentalProvider,
+    CsvUniverseProvider,
+    FundamentalBatch,
+)
 
 FIXTURE = Path("tests/fixtures/universe.csv")
 
@@ -29,6 +33,7 @@ def _source(identifier: str) -> SourceMetadata:
         source_class="official_filing",
         reliability_tier=1,
         terms_reference="fixture://terms",
+        source_artifact_checksum="b" * 64,
     )
 
 
@@ -63,6 +68,7 @@ def test_restatement_is_linked_without_overwriting_original_fact(tmp_path: Path)
         value=Decimal("1000000"),
         status=DataStatus.AVAILABLE,
         currency="INR",
+        reported_unit="INR crore",
         source=original_source,
     )
     restated = FundamentalFactRecord(
@@ -86,6 +92,17 @@ def test_restatement_is_linked_without_overwriting_original_fact(tmp_path: Path)
             FundamentalBatch((definition,), (restated,), (), restated_source)
         )
     with session_scope(factory) as session:
+        repeated = FundamentalIngestionService(session).ingest(
+            FundamentalBatch((definition,), (restated,), (), restated_source)
+        )
+    conflicting = FundamentalFactRecord(
+        **{**restated.__dict__, "value": Decimal("1200000")}
+    )
+    with session_scope(factory) as session:
+        conflict = FundamentalIngestionService(session).ingest(
+            FundamentalBatch((definition,), (conflicting,), (), restated_source)
+        )
+    with session_scope(factory) as session:
         facts = list(
             session.scalars(select(FundamentalFact).order_by(FundamentalFact.available_at))
         )
@@ -101,6 +118,8 @@ def test_restatement_is_linked_without_overwriting_original_fact(tmp_path: Path)
 
     assert (first.inserted, first.quality_flags) == (1, 0)
     assert (second.inserted, second.quality_flags) == (1, 0)
+    assert (repeated.inserted, repeated.skipped, repeated.quality_flags) == (0, 1, 0)
+    assert (conflict.inserted, conflict.skipped, conflict.quality_flags) == (0, 1, 1)
     assert [fact.value for fact in facts] == [
         Decimal("1000000.00000000"),
         Decimal("1100000.00000000"),
@@ -109,5 +128,38 @@ def test_restatement_is_linked_without_overwriting_original_fact(tmp_path: Path)
     assert facts[1].supersedes_fact_id == facts[0].id
     assert before_restatement[0].value == Decimal("1000000.00000000")
     assert before_restatement[0].source_identifier == "fixture://original"
+    assert before_restatement[0].unit == "INR crore"
     assert after_restatement[0].value == Decimal("1100000.00000000")
     assert after_restatement[0].source_identifier == "fixture://restated"
+    assert after_restatement[0].source_artifact_checksum == "b" * 64
+
+
+def test_manual_filing_csv_requires_and_preserves_filing_evidence(tmp_path: Path) -> None:
+    path = tmp_path / "facts.csv"
+    path.write_text(
+        "isin,metric_code,period_start,period_end,filing_date,available_at,"
+        "consolidation_scope,value,status,currency,reported_unit\n"
+        "INE000A01001,revenue,2025-04-01,2026-03-31,2026-05-20,"
+        "2026-05-20T12:00:00+05:30,consolidated,1234,available,INR,INR crore\n"
+        "INE000A01001,total_assets,,2026-03-31,2026-05-20,"
+        "2026-05-20T12:00:00+05:30,consolidated,,unknown,INR,INR lakh\n",
+        encoding="utf-8",
+    )
+
+    batch = CsvFundamentalProvider().fetch_facts(
+        path,
+        "Issuer annual report",
+        "https://issuer.example/annual-report.pdf",
+        "issuer-document-terms",
+        "a" * 64,
+    )
+
+    assert len(batch.records) == 2
+    assert not batch.issues
+    assert batch.source.source_identifier == "https://issuer.example/annual-report.pdf"
+    assert batch.source.checksum != batch.source.source_artifact_checksum
+    assert batch.source.source_artifact_checksum == "a" * 64
+    assert batch.records[0].reported_unit == "INR crore"
+    assert batch.records[1].period_start == batch.records[1].period_end
+    assert batch.records[1].value is None
+    assert batch.records[1].status is DataStatus.UNKNOWN

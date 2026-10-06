@@ -30,3 +30,15 @@ def test_initial_migration_creates_foundation_tables(tmp_path: Path) -> None:
         "universe_memberships",
         "universes",
     } == tables
+    inspector = inspect(create_engine(settings.app.database_url))
+    assert "source_artifact_checksum" in {
+        column["name"] for column in inspector.get_columns("source_records")
+    }
+    assert "reported_unit" in {
+        column["name"] for column in inspector.get_columns("fundamental_facts")
+    }
+    assert "period_start" in next(
+        constraint["column_names"]
+        for constraint in inspector.get_unique_constraints("fundamental_facts")
+        if constraint["name"] == "uq_fundamental_fact_revision"
+    )

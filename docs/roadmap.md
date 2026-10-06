@@ -197,28 +197,48 @@ Completion criteria:
 
 ### Milestone 5: Fundamental facts and definitions
 
-**Status: In progress**
+**Status: Implementation complete; filing evidence pending**
 
 Delivered:
 
 - Source-independent, versioned metric-definition registry with unit, period type, value
   kind, formula, and reported-versus-derived classification.
 - Immutable point-in-time fundamental facts with filing date, public availability timestamp,
-  consolidation scope, currency, explicit data status, and complete source provenance.
+  consolidation scope, currency, reported unit/scale, explicit data status, and complete
+  source provenance.
 - Restatements preserve prior reported values through explicit supersession links.
-- Raw-fact ingestion rejects derived metric definitions and invalid value/status combinations.
+- Baseline reported metric catalog covers revenue, net profit, operating cash flow, balance
+  sheet, shares outstanding, promoter holding, and promoter pledge.
+- Manual CSV import requires an official filing URL, terms reference, and original artifact
+  SHA-256; the exact transcription file gets its own checksum. No automatic filing scraping.
+- Period-aware deduplication, timezone-aware publication timestamps, explicit missing versus
+  not-applicable states, immutable definition versions, and CLI catalog/import/as-of queries.
+- Raw-fact ingestion rejects derived definitions, malformed periods, future-restatement
+  leakage, and invalid value/status combinations.
 
-No company values have been imported: a legally usable filing source must be approved first.
+No company values have been imported. Milestone sign-off still requires selecting a filing
+whose terms permit this use and reconciling representative reported facts against that exact
+company document. Synthetic tests validate the workflow only; they are not company evidence.
+The Infosys annual-report site was reviewed as a candidate on 2026-10-06, but its Terms of Use
+do not provide a data-extraction license; it was not approved or imported.
+The BSE Infosys financial-results listing was also reviewed; the BSE website disclaimer
+prohibits reproduction, redistribution, or transmission without express written consent. It
+was not approved or imported. NSE terms were not verifiable during this review.
+Screener.in's current terms permit only personal, non-commercial transitory viewing and
+prohibit copying; they do not authorize persistent database ingestion. No Screener data has
+been copied or imported.
 
 Scope:
 
-- Approve legally usable sources for statements, filings, and ownership data.
-- Create a metric-definition registry covering period, units, consolidation, and formula.
-- Store raw facts separately from derived metrics, with filing and availability timestamps.
+- Select and approve the legal basis for each manually supplied issuer/exchange filing.
+- Populate and independently reconcile revenue, profit, cash flow, balance sheet, share count,
+  and ownership facts against cited original filings.
+- Define derived metric formulas separately before any derived facts are computed.
 
 Completion criteria:
 
-- Revenue, profit, cash flow, balance sheet, share count, and filing provenance are queryable point in time.
+- Revenue, profit, cash flow, balance sheet, share count, ownership, and filing provenance are
+  populated and queryable point in time from an approved documented filing.
 - Restatements preserve history and supersession relationships.
 - Missing and non-applicable values remain distinct.
 - Selected metrics reconcile against documented company filings.

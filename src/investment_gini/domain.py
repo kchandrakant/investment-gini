@@ -28,6 +28,7 @@ class SourceMetadata:
     source_class: str = "file"
     reliability_tier: int = 6
     terms_reference: str | None = None
+    source_artifact_checksum: str | None = None
 
 
 @dataclass(frozen=True)
@@ -113,4 +114,5 @@ class FundamentalFactRecord:
     value: Decimal | None
     status: DataStatus
     currency: str | None
+    reported_unit: str
     source: SourceMetadata

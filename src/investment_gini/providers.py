@@ -20,6 +20,7 @@ from zipfile import BadZipFile, ZipFile
 from investment_gini.domain import (
     BenchmarkBarRecord,
     CorporateActionRecord,
+    DataStatus,
     Exchange,
     FundamentalFactRecord,
     MetricDefinitionRecord,
@@ -27,6 +28,7 @@ from investment_gini.domain import (
     SourceMetadata,
     UniverseMembershipRecord,
 )
+from investment_gini.fundamentals import fundamental_metric_catalog
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,182 @@ class FundamentalBatch:
     records: tuple[FundamentalFactRecord, ...]
     issues: tuple[ProviderIssue, ...]
     source: SourceMetadata
+
+
+class CsvFundamentalProvider:
+    required_fields: ClassVar[frozenset[str]] = frozenset(
+        {
+            "isin",
+            "metric_code",
+            "period_start",
+            "period_end",
+            "filing_date",
+            "available_at",
+            "consolidation_scope",
+            "value",
+            "status",
+            "currency",
+            "reported_unit",
+        }
+    )
+
+    def fetch_facts(
+        self,
+        path: Path,
+        source_name: str,
+        source_url: str,
+        terms_reference: str,
+        source_artifact_checksum: str,
+    ) -> FundamentalBatch:
+        if not source_name.strip():
+            raise ValueError("source name is required")
+        if not source_url.startswith(("https://", "http://")):
+            raise ValueError("source URL must identify the original filing")
+        if not terms_reference.strip():
+            raise ValueError("terms reference is required")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", source_artifact_checksum):
+            raise ValueError("source artifact checksum must be a 64-character SHA-256")
+
+        contents = path.read_bytes()
+        source = SourceMetadata(
+            provider=f"manual_filing:{source_name.strip()}",
+            source_identifier=source_url,
+            retrieved_at=datetime.now(UTC),
+            checksum=hashlib.sha256(contents).hexdigest(),
+            source_class="manual_official_filing",
+            reliability_tier=1,
+            terms_reference=terms_reference.strip(),
+            source_artifact_checksum=source_artifact_checksum.lower(),
+        )
+        catalog = {item.code: item for item in fundamental_metric_catalog()}
+        definitions: dict[tuple[str, str], MetricDefinitionRecord] = {}
+        records: list[FundamentalFactRecord] = []
+        issues: list[ProviderIssue] = []
+
+        with path.open(encoding="utf-8-sig", newline="") as csv_file:
+            reader = csv.DictReader(csv_file)
+            missing_columns = self.required_fields - set(reader.fieldnames or ())
+            if missing_columns:
+                issue = ProviderIssue(
+                    row_number=1,
+                    field_name=None,
+                    reason=f"missing required columns: {', '.join(sorted(missing_columns))}",
+                )
+                return FundamentalBatch((), (), (issue,), source)
+
+            for row_number, row in enumerate(reader, start=2):
+                try:
+                    record, definition = self._parse_row(row, row_number, source, catalog)
+                    records.append(record)
+                    definitions[(definition.code, definition.version)] = definition
+                except ValueError as error:
+                    issues.append(
+                        ProviderIssue(
+                            row_number=row_number,
+                            field_name=None,
+                            reason=str(error),
+                            observed_value=str(row),
+                        )
+                    )
+
+        return FundamentalBatch(
+            definitions=tuple(definitions.values()),
+            records=tuple(records),
+            issues=tuple(issues),
+            source=source,
+        )
+
+    @staticmethod
+    def _parse_row(
+        row: dict[str, str | None],
+        row_number: int,
+        source: SourceMetadata,
+        catalog: dict[str, MetricDefinitionRecord],
+    ) -> tuple[FundamentalFactRecord, MetricDefinitionRecord]:
+        try:
+            isin = (row.get("isin") or "").strip().upper()
+            if len(isin) != 12:
+                raise ValueError("ISIN must contain 12 characters")
+            metric_code = (row.get("metric_code") or "").strip()
+            definition = catalog.get(metric_code)
+            if definition is None:
+                raise ValueError(f"unsupported metric code {metric_code!r}")
+
+            period_end = date.fromisoformat((row.get("period_end") or "").strip())
+            period_start_raw = (row.get("period_start") or "").strip()
+            if definition.period_type == "instant":
+                period_start = period_end
+                if period_start_raw and date.fromisoformat(period_start_raw) != period_end:
+                    raise ValueError("instant metric period_start must equal period_end")
+            else:
+                if not period_start_raw:
+                    raise ValueError("duration metric requires period_start")
+                period_start = date.fromisoformat(period_start_raw)
+                if period_start >= period_end:
+                    raise ValueError("duration metric period_start must precede period_end")
+
+            filing_date = date.fromisoformat((row.get("filing_date") or "").strip())
+            available_at = datetime.fromisoformat(
+                (row.get("available_at") or "").strip().replace("Z", "+00:00")
+            )
+            if available_at.tzinfo is None or available_at.utcoffset() is None:
+                raise ValueError("available_at must include an explicit timezone")
+            if available_at.date() < filing_date:
+                raise ValueError("available_at cannot precede filing_date")
+
+            status = DataStatus((row.get("status") or "").strip())
+            value_raw = (row.get("value") or "").strip()
+            value = Decimal(value_raw) if value_raw else None
+            if status in (DataStatus.AVAILABLE, DataStatus.ESTIMATED) and value is None:
+                raise ValueError(f"{status.value} status requires a numeric value")
+            if (
+                status in (DataStatus.UNKNOWN, DataStatus.NOT_APPLICABLE, DataStatus.STALE)
+                and value is not None
+            ):
+                raise ValueError(f"{status.value} status cannot carry a numeric value")
+            if value is not None and not value.is_finite():
+                raise ValueError("value must be a finite decimal")
+            if (
+                definition.value_kind == "percentage"
+                and value is not None
+                and (value < 0 or value > 100)
+            ):
+                raise ValueError("percentage fact must be between 0 and 100")
+            if definition.value_kind == "shares" and value is not None and value < 0:
+                raise ValueError("share count cannot be negative")
+
+            currency = (row.get("currency") or "").strip().upper() or None
+            if definition.value_kind == "currency" and not currency:
+                raise ValueError("currency-valued metric requires currency")
+            reported_unit = (row.get("reported_unit") or "").strip()
+            if not reported_unit:
+                raise ValueError("reported_unit is required; preserve the filing's stated scale")
+            consolidation_scope = (row.get("consolidation_scope") or "").strip().lower()
+            if consolidation_scope not in {"consolidated", "standalone"}:
+                raise ValueError("consolidation_scope must be consolidated or standalone")
+        except (InvalidOperation, TypeError) as error:
+            raise ValueError(f"row {row_number}: invalid decimal value") from error
+        except ValueError as error:
+            raise ValueError(f"row {row_number}: {error}") from error
+
+        return (
+            FundamentalFactRecord(
+                isin=isin,
+                metric_code=definition.code,
+                metric_version=definition.version,
+                period_start=period_start,
+                period_end=period_end,
+                filing_date=filing_date,
+                available_at=available_at,
+                consolidation_scope=consolidation_scope,
+                value=value,
+                status=status,
+                currency=currency,
+                reported_unit=reported_unit,
+                source=source,
+            ),
+            definition,
+        )
 
 
 class NseArchiveUnavailableError(RuntimeError):

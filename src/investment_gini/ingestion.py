@@ -462,6 +462,7 @@ class FundamentalIngestionService:
             source_identifier=batch.source.source_identifier,
             retrieved_at=batch.source.retrieved_at,
             checksum=batch.source.checksum,
+            source_artifact_checksum=batch.source.source_artifact_checksum,
             available_at=min(
                 (record.available_at for record in batch.records), default=None
             ),
@@ -470,6 +471,7 @@ class FundamentalIngestionService:
         self._session.flush()
 
         definitions: dict[tuple[str, str], MetricDefinition] = {}
+        definition_conflicts = 0
         for definition_record in batch.definitions:
             definition = self._session.scalar(
                 select(MetricDefinition).where(
@@ -491,6 +493,30 @@ class FundamentalIngestionService:
                 )
                 self._session.add(definition)
                 self._session.flush()
+            elif (
+                definition.name != definition_record.name
+                or definition.description != definition_record.description
+                or definition.unit != definition_record.unit
+                or definition.period_type != definition_record.period_type
+                or definition.value_kind != definition_record.value_kind
+                or definition.formula != definition_record.formula
+                or definition.is_derived != definition_record.is_derived
+            ):
+                self._session.add(
+                    DataQualityFlag(
+                        ingestion_run_id=run.id,
+                        entity_type="metric_definition",
+                        field_name="version",
+                        severity="error",
+                        reason=(
+                            "metric definition version is immutable and conflicts "
+                            "with stored definition"
+                        ),
+                        observed_value=f"{definition_record.code}:{definition_record.version}",
+                    )
+                )
+                definition_conflicts += 1
+                continue
             definitions[(definition_record.code, definition_record.version)] = definition
 
         for issue in batch.issues:
@@ -504,7 +530,7 @@ class FundamentalIngestionService:
                     observed_value=issue.observed_value,
                 )
             )
-        quality_flags = len(batch.issues)
+        quality_flags = len(batch.issues) + definition_conflicts
         inserted = 0
         skipped = 0
         for fact_record in sorted(batch.records, key=lambda item: item.available_at):
@@ -519,12 +545,42 @@ class FundamentalIngestionService:
                 reason = "fundamental fact references an unknown instrument"
             elif definition is None:
                 reason = "fundamental fact references an unknown metric definition"
+            elif fact_record.source != batch.source:
+                reason = "fundamental fact source metadata differs from batch source"
             elif definition.is_derived:
                 reason = "derived metrics cannot be ingested as raw fundamental facts"
-            elif fact_record.status.value == "available" and fact_record.value is None:
-                reason = "available fundamental fact requires a numeric value"
-            elif fact_record.status.value != "available" and fact_record.value is not None:
+
+            if reason is None and (
+                fact_record.status.value in {"available", "estimated"}
+                and fact_record.value is None
+            ):
+                reason = "available or estimated fundamental fact requires a numeric value"
+            elif reason is None and (
+                fact_record.status.value in {"unknown", "not_applicable", "stale"}
+                and fact_record.value is not None
+            ):
                 reason = "unavailable fundamental fact cannot carry a numeric value"
+            elif reason is None and fact_record.period_start is None:
+                reason = "fundamental fact requires an explicit period start or instant date"
+            if reason is None and definition is not None:
+                if (
+                    definition.period_type == "duration"
+                    and fact_record.period_start is not None
+                    and fact_record.period_start >= fact_record.period_end
+                ):
+                    reason = "duration metric period_start must precede period_end"
+                elif (
+                    definition.period_type == "instant"
+                    and fact_record.period_start != fact_record.period_end
+                ):
+                    reason = "instant metric period_start must equal period_end"
+            if reason is None and (
+                fact_record.available_at.tzinfo is None
+                or fact_record.available_at.utcoffset() is None
+            ):
+                reason = "fundamental fact availability timestamp requires a timezone"
+            elif reason is None and fact_record.available_at.date() < fact_record.filing_date:
+                reason = "fundamental fact availability cannot precede filing date"
             if reason is not None:
                 self._session.add(
                     DataQualityFlag(
@@ -544,17 +600,43 @@ class FundamentalIngestionService:
                 continue
             assert instrument is not None
             assert definition is not None
-            exists = self._session.scalar(
-                select(FundamentalFact.id).where(
+            existing_fact = self._session.scalar(
+                select(FundamentalFact).where(
                     FundamentalFact.instrument_id == instrument.id,
                     FundamentalFact.metric_definition_id == definition.id,
+                    FundamentalFact.period_start == fact_record.period_start,
                     FundamentalFact.period_end == fact_record.period_end,
                     FundamentalFact.consolidation_scope
                     == fact_record.consolidation_scope,
                     FundamentalFact.available_at == fact_record.available_at,
                 )
             )
-            if exists is not None:
+            if existing_fact is not None:
+                if (
+                    existing_fact.filing_date != fact_record.filing_date
+                    or existing_fact.value != fact_record.value
+                    or existing_fact.status != fact_record.status.value
+                    or existing_fact.currency != fact_record.currency
+                    or existing_fact.reported_unit != fact_record.reported_unit
+                ):
+                    self._session.add(
+                        DataQualityFlag(
+                            ingestion_run_id=run.id,
+                            entity_type="fundamental_fact",
+                            field_name="revision_identity",
+                            severity="error",
+                            reason=(
+                                "conflicting fact content reuses an existing availability "
+                                "timestamp and period identity"
+                            ),
+                            observed_value=(
+                                f"{fact_record.isin}:{fact_record.metric_code}:"
+                                f"{fact_record.period_start}:{fact_record.period_end}:"
+                                f"{fact_record.available_at.isoformat()}"
+                            ),
+                        )
+                    )
+                    quality_flags += 1
                 skipped += 1
                 continue
             superseded = self._session.scalar(
@@ -562,6 +644,7 @@ class FundamentalIngestionService:
                 .where(
                     FundamentalFact.instrument_id == instrument.id,
                     FundamentalFact.metric_definition_id == definition.id,
+                    FundamentalFact.period_start == fact_record.period_start,
                     FundamentalFact.period_end == fact_record.period_end,
                     FundamentalFact.consolidation_scope
                     == fact_record.consolidation_scope,
@@ -584,6 +667,7 @@ class FundamentalIngestionService:
                     value=fact_record.value,
                     status=fact_record.status.value,
                     currency=fact_record.currency,
+                    reported_unit=fact_record.reported_unit,
                 )
             )
             self._session.flush()

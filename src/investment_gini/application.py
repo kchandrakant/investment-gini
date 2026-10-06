@@ -14,9 +14,12 @@ from sqlalchemy import func, or_, select
 
 from investment_gini.config import Settings, load_settings
 from investment_gini.database import create_database_engine, create_session_factory, session_scope
+from investment_gini.domain import MetricDefinitionRecord
+from investment_gini.fundamentals import fundamental_metric_catalog
 from investment_gini.ingestion import (
     BenchmarkIngestionService,
     CorporateActionIngestionService,
+    FundamentalIngestionService,
     IngestionSummary,
     PriceIngestionService,
     UniverseIngestionService,
@@ -38,6 +41,7 @@ from investment_gini.models import (
 )
 from investment_gini.providers import (
     CsvCorporateActionProvider,
+    CsvFundamentalProvider,
     CsvUniverseProvider,
     NiftyHistoricalIndexProvider,
     NiftyIndicesUniverseProvider,
@@ -162,9 +166,11 @@ class FundamentalFactPoint:
     value: Decimal | None
     status: str
     unit: str
+    metric_unit: str
     currency: str | None
     source_identifier: str
     source_checksum: str
+    source_artifact_checksum: str | None
 
 
 @dataclass(frozen=True)
@@ -250,6 +256,8 @@ def get_fundamental_facts_as_of(
     as_of: datetime,
     settings: Settings | None = None,
 ) -> tuple[FundamentalFactPoint, ...]:
+    if as_of.tzinfo is None or as_of.utcoffset() is None:
+        raise ValueError("fundamental as-of timestamp must include an explicit timezone")
     resolved_settings = settings or load_settings()
     engine = create_database_engine(resolved_settings.app.database_url)
     factory = create_session_factory(engine)
@@ -269,9 +277,14 @@ def get_fundamental_facts_as_of(
             .order_by(FundamentalFact.available_at.desc())
         ).all()
 
-    latest: dict[tuple[int, date, str], FundamentalFactPoint] = {}
+    latest: dict[tuple[int, date, date, str], FundamentalFactPoint] = {}
     for fact, definition, source_record in rows:
-        key = (definition.id, fact.period_end, fact.consolidation_scope)
+        key = (
+            definition.id,
+            fact.period_start,
+            fact.period_end,
+            fact.consolidation_scope,
+        )
         if key not in latest:
             latest[key] = FundamentalFactPoint(
                 metric_code=definition.code,
@@ -284,14 +297,20 @@ def get_fundamental_facts_as_of(
                 consolidation_scope=fact.consolidation_scope,
                 value=fact.value,
                 status=fact.status,
-                unit=definition.unit,
+                unit=fact.reported_unit,
+                metric_unit=definition.unit,
                 currency=fact.currency,
                 source_identifier=source_record.source_identifier,
                 source_checksum=source_record.checksum,
+                source_artifact_checksum=source_record.source_artifact_checksum,
             )
     return tuple(
         sorted(latest.values(), key=lambda item: (item.metric_code, item.period_end))
     )
+
+
+def get_fundamental_metric_catalog() -> tuple[MetricDefinitionRecord, ...]:
+    return fundamental_metric_catalog()
 
 
 def import_universe_csv(path: Path, settings: Settings | None = None) -> IngestionSummary:
@@ -317,6 +336,27 @@ def import_corporate_actions_csv(
     factory = create_session_factory(create_database_engine(resolved.app.database_url))
     with session_scope(factory) as session:
         return CorporateActionIngestionService(session).ingest(batch)
+
+
+def import_fundamental_csv(
+    path: Path,
+    source_name: str,
+    source_url: str,
+    terms_reference: str,
+    source_artifact_checksum: str,
+    settings: Settings | None = None,
+) -> IngestionSummary:
+    resolved = settings or load_settings()
+    batch = CsvFundamentalProvider().fetch_facts(
+        path,
+        source_name,
+        source_url,
+        terms_reference,
+        source_artifact_checksum,
+    )
+    factory = create_session_factory(create_database_engine(resolved.app.database_url))
+    with session_scope(factory) as session:
+        return FundamentalIngestionService(session).ingest(batch)
 
 
 def sync_nifty200_corporate_actions(

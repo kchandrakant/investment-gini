@@ -49,9 +49,22 @@ For real current constituents, `sync-nifty200` downloads the official NSE Indice
 
 `membership-coverage` fails when a requested period predates imported Nifty 200 membership evidence. This safeguard prevents unsupported history from being labeled point-in-time or survivorship-bias-free; it does not supply the historical compositions still required to complete Milestone 2.
 
+`fundamental-metrics` lists the versioned reported-fact catalog. `import-fundamentals` accepts
+manually transcribed facts from a filing only when the operator supplies the original filing
+URL, terms reference, and filing artifact SHA-256. The application does not crawl or download
+filings. `fundamentals --isin ... --as-of ...` queries the latest reported facts that were
+available by a timezone-aware timestamp. See the
+[fundamental filing import contract](docs/data-sources/fundamental-facts.md).
+
 ## Current Scope
 
-The current foundation provides configuration, provenance-aware universe, raw market-price, and corporate-action storage, versioned migrations, membership-coverage safeguards, searchable instrument and raw/adjusted price-series services, deterministic single-series technical features, a CLI, and a Streamlit Stock Explorer and coverage dashboard. Technical snapshots expose formula version, as-of date, evidence windows, and explicit insufficient-history states. Point-in-time historical index composition, benchmark-relative strength, momentum scoring, fundamentals, portfolio management, and backtesting remain deferred.
+The current foundation provides configuration, provenance-aware universe, raw market-price,
+corporate-action, benchmark, and fundamental-fact storage; versioned migrations;
+membership-coverage safeguards; searchable instrument and raw/adjusted price-series
+services; deterministic technical features and momentum; a CLI; and a Streamlit Stock
+Explorer and coverage dashboard. Fundamental filing imports are manual and source-cited;
+the M5 roadmap remains open until documented filing facts are approved and reconciled.
+Portfolio management and backtesting remain deferred.
 
 See the [implementation roadmap](docs/roadmap.md) for milestone status, completion criteria, and
 the current execution checklist. The [architecture proposal](docs/architecture-proposal.md)

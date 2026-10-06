@@ -1,14 +1,17 @@
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from investment_gini.application import (
+    get_fundamental_facts_as_of,
+    get_fundamental_metric_catalog,
     get_members,
     get_nifty200_membership_coverage,
     get_nifty200_price_coverage,
     import_corporate_actions_csv,
+    import_fundamental_csv,
     import_universe_csv,
     initialize_database,
     sync_nifty200,
@@ -58,6 +61,80 @@ def import_corporate_actions(
         f"Run {summary.run_id}: inserted={summary.inserted}, skipped={summary.skipped}, "
         f"quality_flags={summary.quality_flags}"
     )
+
+
+@app.command("import-fundamentals")
+def import_fundamentals(
+    path: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    source_name: Annotated[str, typer.Option(help="Name of the filing issuer/source.")],
+    source_url: Annotated[
+        str, typer.Option(help="URL of the original official filing document.")
+    ],
+    terms_reference: Annotated[
+        str, typer.Option(help="Terms or legal basis for use of this filing.")
+    ],
+    source_artifact_checksum: Annotated[
+        str,
+        typer.Option(help="SHA-256 of the original filing artifact, not the CSV."),
+    ],
+) -> None:
+    """Import manually transcribed point-in-time facts from an official filing."""
+    try:
+        summary = import_fundamental_csv(
+            path,
+            source_name,
+            source_url,
+            terms_reference,
+            source_artifact_checksum,
+        )
+    except ValueError as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(
+        f"Run {summary.run_id}: inserted={summary.inserted}, skipped={summary.skipped}, "
+        f"quality_flags={summary.quality_flags}"
+    )
+
+
+@app.command("fundamental-metrics")
+def fundamental_metrics() -> None:
+    """List supported reported fundamental metrics and period semantics."""
+    for definition in get_fundamental_metric_catalog():
+        typer.echo(
+            f"{definition.code}\t{definition.version}\t{definition.period_type}\t"
+            f"{definition.value_kind}\t{definition.name}"
+        )
+
+
+@app.command("fundamentals")
+def fundamentals(
+    isin: Annotated[str, typer.Option(help="Instrument ISIN.")],
+    as_of: Annotated[
+        str,
+        typer.Option(help="Information cutoff timestamp with timezone, ISO-8601."),
+    ],
+) -> None:
+    """Query the latest reported fundamental facts known by an as-of timestamp."""
+    try:
+        cutoff = datetime.fromisoformat(as_of.replace("Z", "+00:00"))
+        if cutoff.tzinfo is None or cutoff.utcoffset() is None:
+            raise ValueError("as-of timestamp must include an explicit timezone")
+    except ValueError as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from error
+
+    facts = get_fundamental_facts_as_of(isin, cutoff)
+    if not facts:
+        typer.echo("No fundamental facts available by that timestamp.")
+        return
+    for fact in facts:
+        typer.echo(
+            f"{fact.metric_code}\t{fact.period_start}/{fact.period_end}\t"
+            f"{fact.consolidation_scope}\t{fact.value if fact.value is not None else fact.status} "
+            f"{fact.unit}\tfiled={fact.filing_date}\tavailable={fact.available_at.isoformat()}\t"
+            f"source={fact.source_identifier}\ttranscription_sha256={fact.source_checksum}\t"
+            f"filing_sha256={fact.source_artifact_checksum or 'not-recorded'}"
+        )
 
 
 @app.command("sync-corporate-actions")

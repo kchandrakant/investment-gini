@@ -87,6 +87,7 @@ class SourceRecord(Base):
     source_identifier: Mapped[str] = mapped_column(Text)
     retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     checksum: Mapped[str] = mapped_column(String(64), index=True)
+    source_artifact_checksum: Mapped[str | None] = mapped_column(String(64))
     reported_period: Mapped[str | None] = mapped_column(String(50))
     available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -223,6 +224,7 @@ class FundamentalFact(Base):
         UniqueConstraint(
             "instrument_id",
             "metric_definition_id",
+            "period_start",
             "period_end",
             "consolidation_scope",
             "available_at",
@@ -251,3 +253,4 @@ class FundamentalFact(Base):
     value: Mapped[Decimal | None] = mapped_column(Numeric(30, 8))
     status: Mapped[str] = mapped_column(String(20))
     currency: Mapped[str | None] = mapped_column(String(3))
+    reported_unit: Mapped[str] = mapped_column(String(40))
